@@ -1,0 +1,498 @@
+<title>Stack Smash Lab</title>
+<style>
+  /* Layout: single-column teaching page; a fixed-width "memory" column is the centerpiece,
+     inputs above it, annotations beside each stack slot. Monospace memory, humanist UI. */
+  :root {
+    --bg: #f4f2ee;
+    --panel: #fffdf9;
+    --fg: #1f1b16;
+    --muted: #6b6257;
+    --line: #ddd5c8;
+    --accent: #b5431f;      /* terminal amber-red */
+    --buf: #2f7d55;         /* buffer = safe green */
+    --buf-fill: #d8eadf;
+    --sfp: #c08a1e;         /* saved frame ptr = amber */
+    --ret: #b5431f;         /* return addr = red */
+    --nop: #4a6fa5;         /* nop sled = blue */
+    --shell: #7a3fb0;       /* shellcode = purple */
+    --overwrite: #b5431f;
+    --code-bg: #17130e;
+    --code-fg: #e8e0d2;
+    --font-ui: "Spectral", Georgia, serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --font-label: "Inter", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17130e;
+      --panel: #211b14;
+      --fg: #ece4d6;
+      --muted: #a69b8a;
+      --line: #3a3026;
+      --accent: #e0703f;
+      --buf: #5bbd87;
+      --buf-fill: #1d3028;
+      --sfp: #e0b24e;
+      --ret: #e0703f;
+      --nop: #7fa8dd;
+      --shell: #b589e0;
+      --code-bg: #0d0a07;
+      --code-fg: #e8e0d2;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17130e;
+    --panel: #211b14;
+    --fg: #ece4d6;
+    --muted: #a69b8a;
+    --line: #3a3026;
+    --accent: #e0703f;
+    --buf: #5bbd87;
+    --buf-fill: #1d3028;
+    --sfp: #e0b24e;
+    --ret: #e0703f;
+    --nop: #7fa8dd;
+    --shell: #b589e0;
+    --code-bg: #0d0a07;
+    --code-fg: #e8e0d2;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-ui);
+    line-height: 1.55;
+    margin: 0;
+  }
+  .wrap {
+    max-width: 920px;
+    margin: 0 auto;
+    padding-block: 32px 64px;
+    padding-inline: 20px;
+  }
+  header h1 {
+    font-size: clamp(1.9rem, 5vw, 2.8rem);
+    line-height: 1.05;
+    margin: 0 0 6px;
+    text-wrap: balance;
+    letter-spacing: -0.02em;
+  }
+  header .sub {
+    color: var(--muted);
+    font-size: 1.02rem;
+    margin: 0 0 4px;
+  }
+  header .ctx {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin-top: 10px;
+  }
+  .eyebrow {
+    font-family: var(--font-label);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin: 0 0 4px;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 20px;
+    margin-top: 24px;
+  }
+
+  label.field { display: block; font-family: var(--font-label); font-size: 0.82rem; font-weight: 600; margin-bottom: 8px; }
+  .inputrow { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  input[type="text"] {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--bg);
+    color: var(--fg);
+    flex: 1 1 320px;
+    min-width: 0;
+  }
+  input[type="text"]:focus-visible, button:focus-visible, .preset:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .meter { font-family: var(--font-mono); font-size: 0.82rem; color: var(--muted); min-width: 92px; text-align: right; }
+  .meter.over { color: var(--accent); font-weight: 700; }
+
+  .presets { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .preset {
+    font-family: var(--font-label); font-size: 0.78rem; font-weight: 500;
+    padding: 7px 12px; border-radius: 20px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: var(--fg);
+  }
+  .preset:hover { border-color: var(--accent); color: var(--accent); }
+
+  .slidewrap { margin-top: 18px; }
+  .slidewrap .row { display: flex; justify-content: space-between; font-family: var(--font-label); font-size: 0.8rem; margin-bottom: 6px; }
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+  /* Stack diagram */
+  .stack { margin-top: 10px; display: flex; flex-direction: column; gap: 3px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-family: var(--font-label); font-size: 0.74rem; margin: 18px 0 4px; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .chip { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+  .region { border-radius: 6px; border: 1px solid var(--line); overflow: hidden; }
+  .region-head {
+    font-family: var(--font-label); font-size: 0.7rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 4px 10px; color: var(--muted);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .bytes { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 8px 8px; }
+  .byte {
+    font-family: var(--font-mono); font-size: 0.7rem;
+    width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+    border-radius: 3px; background: var(--bg); color: var(--muted);
+    border: 1px solid transparent;
+  }
+  .byte.filled { color: var(--fg); font-weight: 600; }
+  .byte.flash { animation: pop 0.4s ease; }
+  @keyframes pop { 0% { transform: scale(1.35); } 100% { transform: scale(1); } }
+
+  .b-buf   { background: var(--buf-fill); color: var(--buf); border-color: color-mix(in srgb, var(--buf) 35%, transparent); }
+  .b-sfp   { background: color-mix(in srgb, var(--sfp) 18%, transparent); color: var(--sfp); border-color: color-mix(in srgb, var(--sfp) 45%, transparent); }
+  .b-ret   { background: color-mix(in srgb, var(--ret) 18%, transparent); color: var(--ret); border-color: color-mix(in srgb, var(--ret) 45%, transparent); }
+  .b-nop   { background: color-mix(in srgb, var(--nop) 18%, transparent); color: var(--nop); border-color: color-mix(in srgb, var(--nop) 40%, transparent); }
+  .b-shell { background: color-mix(in srgb, var(--shell) 18%, transparent); color: var(--shell); border-color: color-mix(in srgb, var(--shell) 40%, transparent); }
+
+  .region.live-buf   .region-head { color: var(--buf); }
+  .region.live-sfp   { border-color: var(--sfp); }
+  .region.live-sfp   .region-head { color: var(--sfp); }
+  .region.live-ret   { border-color: var(--ret); }
+  .region.live-ret   .region-head { color: var(--ret); }
+  .region.live-ret.smashed { box-shadow: 0 0 0 2px var(--ret); }
+
+  .verdict {
+    margin-top: 20px; padding: 14px 16px; border-radius: 8px;
+    font-family: var(--font-label); font-size: 0.92rem; line-height: 1.5;
+    border: 1px solid var(--line);
+  }
+  .verdict.safe { background: color-mix(in srgb, var(--buf) 12%, transparent); border-color: color-mix(in srgb, var(--buf) 40%, transparent); }
+  .verdict.smash { background: color-mix(in srgb, var(--ret) 12%, transparent); border-color: color-mix(in srgb, var(--ret) 45%, transparent); }
+  .verdict strong { font-weight: 700; }
+  .verdict code { font-family: var(--font-mono); font-size: 0.86em; background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+
+  .reg-readout { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .reg {
+    font-family: var(--font-mono); font-size: 0.8rem;
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px;
+    background: var(--bg); flex: 1 1 180px; min-width: 0;
+  }
+  .reg .name { color: var(--muted); font-size: 0.72rem; }
+  .reg .val { font-weight: 700; word-break: break-all; }
+  .reg.hit .val { color: var(--ret); }
+
+  pre.code {
+    background: var(--code-bg); color: var(--code-fg);
+    font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.5;
+    padding: 14px 16px; border-radius: 8px; overflow-x: auto; margin: 0;
+  }
+  pre.code .c { color: #7f8c75; }
+  pre.code .k { color: #e0b24e; }
+  pre.code .danger { color: #e0703f; font-weight: 700; }
+
+  h2 { font-size: 1.3rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .explain p { color: var(--fg); margin: 10px 0; }
+  .explain p.muted { color: var(--muted); font-size: 0.92rem; }
+  .explain code, .inline-code { font-family: var(--font-mono); font-size: 0.85em; background: var(--panel); border: 1px solid var(--line); padding: 1px 5px; border-radius: 4px; }
+
+  .steps { counter-reset: step; list-style: none; padding: 0; margin: 12px 0 0; }
+  .steps li { position: relative; padding-left: 38px; margin-bottom: 14px; }
+  .steps li::before {
+    counter-increment: step; content: counter(step);
+    position: absolute; left: 0; top: 0;
+    width: 26px; height: 26px; border-radius: 50%;
+    background: var(--accent); color: #fff;
+    font-family: var(--font-label); font-size: 0.8rem; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .steps li code { font-family: var(--font-mono); font-size: 0.82em; background: var(--code-bg); color: var(--code-fg); padding: 2px 6px; border-radius: 4px; word-break: break-all; }
+
+  footer { margin-top: 40px; color: var(--muted); font-size: 0.8rem; font-family: var(--font-label); text-align: center; }
+  @media (max-width: 460px) { .byte { width: 22px; height: 22px; font-size: 0.62rem; } }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@400;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap">
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">SE/CprE 4210 · Module 03</p>
+    <h1>Stack Smash Lab</h1>
+    <p class="sub">Type into a 64-byte buffer and watch the overflow climb the stack — straight into the saved frame pointer and the return address.</p>
+    <p class="ctx">// mirrors <code>vuln.c</code>: char buf[64]; strcpy(buf, argv[1]); &nbsp;— no bounds check, no stack canary</p>
+  </header>
+
+  <section class="panel">
+    <label class="field" for="inp">Input string (the attacker controls <span class="inline-code">argv[1]</span>)</label>
+    <div class="inputrow">
+      <input id="inp" type="text" autocomplete="off" spellcheck="false" value="AAAAAAAA">
+      <span id="meter" class="meter">8 / 64 bytes</span>
+    </div>
+    <div class="presets" id="presets">
+      <button class="preset" data-fill="A|8">8 A's — fits</button>
+      <button class="preset" data-fill="A|64">64 A's — buffer full</button>
+      <button class="preset" data-fill="A|72">72 A's — into the SFP</button>
+      <button class="preset" data-fill="A|76">76 A's — segfault</button>
+      <button class="preset" data-exploit="1">NOP sled + shellcode + CAFEBABE</button>
+    </div>
+
+    <div class="slidewrap">
+      <div class="row"><span>Drag to fill with A's</span><span id="slideval">8 bytes</span></div>
+      <input id="slide" type="range" min="0" max="88" value="8">
+    </div>
+
+    <div class="legend">
+      <span><i class="chip" style="background:var(--buf)"></i> buf[64]</span>
+      <span><i class="chip" style="background:var(--sfp)"></i> saved EBP (4B)</span>
+      <span><i class="chip" style="background:var(--ret)"></i> saved EIP / return (4B)</span>
+      <span><i class="chip" style="background:var(--nop)"></i> NOP sled</span>
+      <span><i class="chip" style="background:var(--shell)"></i> shellcode</span>
+    </div>
+
+    <div class="stack" id="stack"></div>
+
+    <div class="reg-readout" id="regs"></div>
+    <div class="verdict" id="verdict"></div>
+  </section>
+
+  <section class="panel explain">
+    <h2>What you're looking at</h2>
+    <p>The stack grows <em>downward</em> toward lower addresses, but <span class="inline-code">strcpy</span> writes <em>upward</em> from the start of <span class="inline-code">buf</span>. So when the input is longer than 64 bytes, the extra bytes march past the end of the buffer and overwrite — in order — the <strong>saved frame pointer</strong> (EBP) and then the <strong>saved return address</strong> (EIP) that <span class="inline-code">main</span> will jump to when it returns.</p>
+    <p class="muted">Offsets here match the Learning Sprint's compile flags exactly: <span class="inline-code">-mpreferred-stack-boundary=2</span> keeps 4-byte alignment, <span class="inline-code">-fno-stack-protector</span> removes the canary, and <span class="inline-code">-z execstack</span> makes the injected shellcode runnable. With a 64-byte buffer, bytes 65–68 land on the saved EBP and bytes 69–72 land on the saved EIP.</p>
+
+    <h2 style="margin-top:22px">Why a segfault is good news</h2>
+    <p>When you overwrite EIP with <span class="inline-code">AAAA</span> (<span class="inline-code">0x41414141</span>), the CPU tries to execute at that address, fails, and you get <strong>Segmentation fault (core dumped)</strong>. That crash is the signal that <em>you now control EIP</em> — the exact register the real exploit redirects into the NOP sled.</p>
+
+    <div style="margin-top:14px">
+      <pre class="code"><span class="c">// the whole vulnerability, 5 lines</span>
+<span class="k">int</span> main(<span class="k">int</span> argc, <span class="k">char</span> **argv) {
+    <span class="k">char</span> buf[64];
+    strcpy(buf, argv[1]);   <span class="danger">// &lt;- no length check: writes as many bytes as you give it</span>
+}</pre>
+    </div>
+  </section>
+
+  <section class="panel explain">
+    <h2>From crash to shell — the Sprint's path</h2>
+    <ol class="steps">
+      <li>Build the payload head: <code>perl -e 'print "\x90"xN' &gt; nop</code> then append the compiled shellcode bytes. The NOP sled gives your return address a wide, forgiving target.</li>
+      <li>Find the offset: feed growing runs of A's until <code>./vuln.o $(perl -e 'print "A"x76')</code> segfaults. That tells you where EBP and EIP sit.</li>
+      <li>Mark the registers: append <code>\xDE\xAD\xBE\xEF</code> (EBP) and <code>\xCA\xFE\xBA\xBE</code> (EIP) so you can spot them in <code>info registers</code> at <code>break *main+49</code>.</li>
+      <li>Read the stack: at <code>break *main+32</code>, dump it with <code>x/80bx $esp</code>, step past <code>strcpy</code>, and pick an address in the middle of the sled.</li>
+      <li>Overwrite EIP with that address in <strong>little-endian</strong> order via <span class="inline-code">hexedit</span>, run under gdb, and land on <span class="inline-code">Owned!!!</span>.</li>
+    </ol>
+    <p class="muted" style="margin-top:16px">The purple-and-blue exploit preset above shows the shape of that final payload: a NOP sled leading into shellcode, with the return slot pointing back into the sled instead of holding a crash value.</p>
+  </section>
+
+  <footer>Teaching tool · reproduces the layout of the CprE 4210 buffer-overflow exercise · no real exploit or shellcode bytes included</footer>
+</div>
+
+<script>
+(function () {
+  var BUF = 64, SFP = 4, RET = 4;
+  var TOTAL = BUF + SFP + RET; // 72 bytes to fully control EIP
+
+  var inp = document.getElementById('inp');
+  var meter = document.getElementById('meter');
+  var slide = document.getElementById('slide');
+  var slideval = document.getElementById('slideval');
+  var stackEl = document.getElementById('stack');
+  var regsEl = document.getElementById('regs');
+  var verdictEl = document.getElementById('verdict');
+  var prevLen = -1;
+
+  // Build a byte-model from an input string of raw bytes (array of {ch, region})
+  function model(bytes, exploit) {
+    var slots = [];
+    for (var i = 0; i < Math.max(TOTAL, bytes.length); i++) {
+      var region;
+      if (i < BUF) region = 'buf';
+      else if (i < BUF + SFP) region = 'sfp';
+      else if (i < BUF + SFP + RET) region = 'ret';
+      else region = 'beyond';
+      var filled = i < bytes.length;
+      slots.push({ idx: i, region: region, filled: filled, val: filled ? bytes[i] : null });
+    }
+    return slots;
+  }
+
+  function hx(v) { return v.toString(16).toUpperCase().padStart(2, '0'); }
+
+  function render(bytes, opts) {
+    opts = opts || {};
+    var len = bytes.length;
+    var slots = model(bytes);
+    stackEl.innerHTML = '';
+
+    var regions = [
+      { key: 'buf', label: 'char buf[64]', from: 0, to: BUF },
+      { key: 'sfp', label: 'saved EBP (frame pointer)', from: BUF, to: BUF + SFP },
+      { key: 'ret', label: 'saved EIP (return address)', from: BUF + SFP, to: BUF + SFP + RET }
+    ];
+
+    regions.forEach(function (r) {
+      var wrapR = document.createElement('div');
+      var touched = len > r.from;
+      wrapR.className = 'region' + (touched ? ' live-' + r.key : '');
+      if (r.key === 'ret' && len >= TOTAL) wrapR.className += ' smashed';
+
+      var head = document.createElement('div');
+      head.className = 'region-head';
+      var filledCount = Math.min(len, r.to) - r.from;
+      head.innerHTML = '<span>' + r.label + '</span><span>' +
+        (touched ? Math.max(0, filledCount) + '/' + (r.to - r.from) + ' overwritten' : 'untouched') + '</span>';
+      wrapR.appendChild(head);
+
+      var bwrap = document.createElement('div');
+      bwrap.className = 'bytes';
+      for (var i = r.from; i < r.to; i++) {
+        var s = slots[i];
+        var b = document.createElement('div');
+        b.className = 'byte';
+        if (s.filled) {
+          b.className += ' filled b-' + (opts.regionOverride ? opts.regionOverride(i) : r.key);
+          b.textContent = typeof s.val === 'string' ? s.val : hx(s.val);
+          if (i >= prevLen && prevLen >= 0) b.className += ' flash';
+        } else {
+          b.textContent = '·';
+        }
+        bwrap.appendChild(b);
+      }
+      wrapR.appendChild(bwrap);
+      stackEl.appendChild(wrapR);
+    });
+
+    // Registers
+    function regVal(from, to) {
+      var out = [];
+      for (var i = to - 1; i >= from; i--) { // show as stored value (little-endian -> big-endian display)
+        out.push(len > i ? (typeof slots[i].val === 'string' ? asHexCh(slots[i].val) : hx(slots[i].val)) : '--');
+      }
+      return out.join(' ');
+    }
+    function asHexCh(c) { return c.charCodeAt ? c.charCodeAt(0).toString(16).toUpperCase().padStart(2,'0') : c; }
+
+    var ebpHit = len > BUF;
+    var eipHit = len > BUF + SFP;
+    regsEl.innerHTML =
+      '<div class="reg ' + (ebpHit ? 'hit' : '') + '"><div class="name">saved EBP</div><div class="val">0x' + (ebpHit ? regVal(BUF, BUF+SFP).replace(/ /g,'') : 'xxxxxxxx') + '</div></div>' +
+      '<div class="reg ' + (eipHit ? 'hit' : '') + '"><div class="name">saved EIP (return)</div><div class="val">0x' + (eipHit ? regVal(BUF+SFP, BUF+SFP+RET).replace(/ /g,'') : 'xxxxxxxx') + '</div></div>';
+
+    // Verdict
+    var v = verdictEl;
+    if (len <= BUF) {
+      v.className = 'verdict safe';
+      v.innerHTML = '<strong>Safe.</strong> ' + len + ' byte' + (len===1?'':'s') + ' fit inside the 64-byte buffer. Nothing past <code>buf</code> is touched; the function returns normally.';
+    } else if (len <= BUF + SFP) {
+      v.className = 'verdict smash';
+      v.innerHTML = '<strong>Saved frame pointer corrupted.</strong> You\'ve written ' + (len - BUF) + ' byte(s) past the buffer into the saved EBP. The program may still return, but the caller\'s frame is now wrong.';
+    } else if (len < TOTAL) {
+      v.className = 'verdict smash';
+      v.innerHTML = '<strong>Return address partially overwritten.</strong> ' + (len - BUF - SFP) + ' of 4 bytes of saved EIP are clobbered. Return will likely jump somewhere invalid.';
+    } else {
+      v.className = 'verdict smash';
+      var eip = eipHit ? regVal(BUF+SFP, BUF+SFP+RET).replace(/ /g,'') : '';
+      v.innerHTML = '<strong>EIP fully controlled → Segmentation fault.</strong> The saved return address is now <code>0x' + eip + '</code>. On <code>ret</code>, the CPU jumps there and crashes — which is exactly the control you need. In the real attack this slot points into the NOP sled.';
+    }
+    prevLen = len;
+  }
+
+  function renderExploit() {
+    // Illustrative shape only: sled of NOPs, "shellcode" placeholder, return slot pointing into sled.
+    // No real shellcode bytes.
+    var slots = [];
+    var sledLen = 48, shellLen = 16; // 48 + 16 = 64 fills buf, then addr overwrites EIP
+    var bytes = [];
+    for (var i = 0; i < sledLen; i++) bytes.push({ ch: '90', region: 'nop' });
+    for (var j = 0; j < shellLen; j++) bytes.push({ ch: 'SC', region: 'shell' });
+    // SFP
+    for (var k = 0; k < 4; k++) bytes.push({ ch: hx(0xCC), region: 'sfp' });
+    // RET -> address in sled (little-endian display of a made-up sled address)
+    var addr = ['20','C0','FF','FF']; // illustrative stack addr, little-endian
+    for (var m = 0; m < 4; m++) bytes.push({ ch: addr[m], region: 'ret' });
+
+    stackEl.innerHTML = '';
+    var regions = [
+      { key:'buf', label:'char buf[64] — NOP sled + shellcode', from:0, to:64 },
+      { key:'sfp', label:'saved EBP (filler 0xCC)', from:64, to:68 },
+      { key:'ret', label:'saved EIP → into the sled', from:68, to:72 }
+    ];
+    regions.forEach(function (r) {
+      var wrapR = document.createElement('div');
+      wrapR.className = 'region live-' + r.key;
+      var head = document.createElement('div');
+      head.className = 'region-head';
+      head.innerHTML = '<span>' + r.label + '</span><span>' + (r.to - r.from) + ' bytes</span>';
+      wrapR.appendChild(head);
+      var bwrap = document.createElement('div'); bwrap.className = 'bytes';
+      for (var i = r.from; i < r.to; i++) {
+        var seg = bytes[i];
+        var b = document.createElement('div');
+        b.className = 'byte filled b-' + seg.region;
+        b.textContent = seg.ch;
+        bwrap.appendChild(b);
+      }
+      wrapR.appendChild(bwrap);
+      stackEl.appendChild(wrapR);
+    });
+
+    regsEl.innerHTML =
+      '<div class="reg hit"><div class="name">saved EBP</div><div class="val">0xCCCCCCCC</div></div>' +
+      '<div class="reg hit"><div class="name">saved EIP (return)</div><div class="val">0xFFFFC020 → NOP sled</div></div>';
+    verdictEl.className = 'verdict smash';
+    verdictEl.innerHTML = '<strong>Exploit layout.</strong> The return slot no longer holds a crash value — it points back into the NOP sled (<code>0x90</code> bytes). Execution slides down the sled into the shellcode and runs it. This is the shape of the final <code>exploit</code> file; the actual shellcode bytes come from the Sprint\'s <code>shellcode.asm</code>.';
+    prevLen = -1;
+  }
+
+  function strBytes(s) {
+    // treat each char as one byte for the A-fill model
+    return s.split('');
+  }
+
+  function update() {
+    var s = inp.value;
+    var bytes = strBytes(s);
+    var len = bytes.length;
+    meter.textContent = len + ' / 64 bytes';
+    meter.className = 'meter' + (len > BUF ? ' over' : '');
+    if (slide.value != len && len <= +slide.max) slide.value = len;
+    slideval.textContent = len + ' bytes';
+    render(bytes, {});
+  }
+
+  inp.addEventListener('input', update);
+  slide.addEventListener('input', function () {
+    var n = +slide.value;
+    inp.value = 'A'.repeat(n);
+    update();
+  });
+
+  document.getElementById('presets').addEventListener('click', function (e) {
+    var t = e.target.closest('button');
+    if (!t) return;
+    if (t.dataset.exploit) { renderExploit(); meter.textContent = '72 / 64 bytes'; meter.className = 'meter over'; slide.value = 72; slideval.textContent = 'exploit'; return; }
+    if (t.dataset.fill) {
+      var parts = t.dataset.fill.split('|');
+      inp.value = parts[0].repeat(+parts[1]);
+      update();
+    }
+  });
+
+  update();
+})();
+</script>
